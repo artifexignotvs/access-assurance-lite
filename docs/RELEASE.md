@@ -23,7 +23,8 @@ the exact endpoints, and supply two private existing Bearer credentials. See
 the README and integration guide. Generic HTTP status codes do not establish
 revocation. Hash evidence establishes consistency, not source authenticity.
 
-The local validation suite contains 97 tests. The separately labeled synthetic
+The local validation suite exercises transport, engine, evidence, CLI and file
+safety. The separately labeled synthetic
 classifier corpus contains 118 scenarios. Reported counts describe these bounded
 inputs and do not establish production fitness, external audits or universal
 compatibility. The hosted workflow evaluates supported Python versions.

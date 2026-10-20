@@ -45,6 +45,7 @@ Repeated builds from identical source produce identical archive bytes.
 * Three observations per resource: control, subject, control again.
 * `VERIFIED`, `RESIDUAL` and `UNKNOWN` outcomes with bounded freshness.
 * Repeated checks, immutable numbered local outputs and state comparison.
+* Transition timeline and time to first observed denial, measured from watch start.
 * JSON evidence, historical inspection and CSV export.
 * Stable exit codes for scripts and CI.
 * A cooperating-resource protocol, runnable local demonstration and synthetic
@@ -103,6 +104,9 @@ the exact configured endpoint; Lite does not scan networks or execute commands.
 `inspect` returning 0 means that a historical document passed validation. It does
 not mean access is currently absent. A watch exit code describes its final sample;
 earlier transitions remain in its numbered evidence files.
+The watch summary also records transitions, residual/unknown sample counts and
+time to first observed `VERIFIED`. Its clock starts when watch starts, not when an
+administrative operation occurs; this is not a causal revocation-latency claim.
 
 ## Interpret the boundary
 

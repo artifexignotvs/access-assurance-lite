@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import stat
@@ -8,9 +9,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from assurance_lite import lab
+from assurance_lite import cli, lab
 from assurance_lite.common import write_private
 
 
@@ -203,6 +206,9 @@ class CommandLineTests(unittest.TestCase):
         summary = json.loads((output / "summary.json").read_text())
         self.assertEqual(summary["samples"], 2)
         self.assertEqual(summary["currentness"], "HISTORICAL_ONLY")
+        self.assertEqual(summary["transitions"], [])
+        self.assertEqual(summary["first_verified_elapsed_seconds"], samples[0]["elapsed_seconds"])
+        self.assertLessEqual(samples[-1]["elapsed_seconds"], summary["elapsed_seconds"])
 
     def test_watch_rejects_invalid_limits_before_reading_configuration(self):
         for count, interval in (("0", "1"), ("721", "1"), ("2", "nan"), ("2", "inf"), ("720", "60")):
@@ -213,6 +219,51 @@ class CommandLineTests(unittest.TestCase):
                                       "--count", count, "--interval", interval, "--json")
                 self.assertEqual(result.returncode, 4)
                 self.assertEqual(json.loads(result.stderr)["error"], "watch_limits_exceeded")
+
+    def test_watch_measures_live_transitions_from_watch_start(self):
+        with lab._running_lab() as (laboratory, config):
+            configuration = self.configure(config)
+            baseline = self.establish(configuration)
+            laboratory.set_phase("restored")
+            output = self.directory / "transition-watch"
+            arguments = cli.parser().parse_args([
+                "watch", "--config", str(configuration), "--baseline", str(baseline),
+                "--allow-http-loopback", "--directory", str(output),
+                "--count", "4", "--interval", "0.1", "--json",
+            ])
+            next_phases = iter(("outage", "denied", "restored"))
+
+            def next_sample(_interval):
+                laboratory.set_phase(next(next_phases))
+
+            captured = io.StringIO()
+            with patch("assurance_lite.cli.time.sleep", side_effect=next_sample):
+                with redirect_stdout(captured):
+                    status = cli._watch(arguments)
+        self.assertEqual(status, 2)
+        samples = [json.loads(line) for line in captured.getvalue().splitlines()]
+        self.assertEqual([sample["state"] for sample in samples],
+                         ["RESIDUAL", "UNKNOWN", "VERIFIED", "RESIDUAL"])
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertEqual(summary["timing_reference"], "WATCH_START_NOT_ADMINISTRATIVE_ACTION")
+        self.assertEqual(summary["residual_samples"], 2)
+        self.assertEqual(summary["unknown_samples"], 1)
+        transitions = summary["transitions"]
+        self.assertEqual([(item["sequence"], item["before"], item["after"]) for item in transitions], [
+            (2, "RESIDUAL", "UNKNOWN"),
+            (3, "UNKNOWN", "VERIFIED"),
+            (4, "VERIFIED", "RESIDUAL"),
+        ])
+        first_verified = summary["first_verified_elapsed_seconds"]
+        verified_transition = next(item for item in transitions if item["after"] == "VERIFIED")
+        self.assertEqual(first_verified, verified_transition["elapsed_seconds"])
+        self.assertGreaterEqual(first_verified, 0)
+        self.assertLessEqual(first_verified, summary["elapsed_seconds"])
+        self.assertEqual([item["elapsed_seconds"] for item in transitions],
+                         sorted(item["elapsed_seconds"] for item in transitions))
+        for secret in self.private_values:
+            self.assertNotIn(secret, captured.getvalue())
+            self.assertNotIn(secret, json.dumps(summary))
 
 
 if __name__ == "__main__":

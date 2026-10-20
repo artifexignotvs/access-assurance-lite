@@ -137,6 +137,11 @@ def _watch(args):
     last = None
     count = 0
     started = time.monotonic()
+    previous_state = None
+    transitions = []
+    first_verified = None
+    residual_samples = 0
+    unknown_samples = 0
     for index in range(args.count):
         if time.monotonic() - started >= 3600:
             break
@@ -144,6 +149,16 @@ def _watch(args):
         write_private(Path(args.directory) / f"check-{index + 1:04d}.json", envelope)
         last = _summary(envelope)
         last["sequence"] = index + 1
+        elapsed = round(time.monotonic() - started, 6)
+        last["elapsed_seconds"] = elapsed
+        if previous_state is not None and last["state"] != previous_state:
+            transitions.append({"sequence": index + 1, "elapsed_seconds": elapsed,
+                                "before": previous_state, "after": last["state"]})
+        previous_state = last["state"]
+        if last["state"] == "VERIFIED" and first_verified is None:
+            first_verified = elapsed
+        residual_samples += last["state"] == "RESIDUAL"
+        unknown_samples += last["state"] == "UNKNOWN"
         _emit(last, args.json)
         count += 1
         if index + 1 < args.count:
@@ -152,7 +167,10 @@ def _watch(args):
         raise AssuranceError("watch_no_observation")
     write_private(Path(args.directory) / "summary.json", {
         "samples": count, "last_recorded_state": last["state"],
-        "currentness": "HISTORICAL_ONLY", "elapsed_seconds": round(time.monotonic() - started, 3),
+        "currentness": "HISTORICAL_ONLY", "elapsed_seconds": round(time.monotonic() - started, 6),
+        "transitions": transitions, "first_verified_elapsed_seconds": first_verified,
+        "residual_samples": residual_samples, "unknown_samples": unknown_samples,
+        "timing_reference": "WATCH_START_NOT_ADMINISTRATIVE_ACTION",
     })
     return EXIT.get(last["state"], 4)
 
