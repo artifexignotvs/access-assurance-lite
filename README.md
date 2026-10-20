@@ -44,7 +44,7 @@ Repeated builds from identical source produce identical archive bytes.
 * Working baseline with scope and credential binding.
 * Three observations per resource: control, subject, control again.
 * `VERIFIED`, `RESIDUAL` and `UNKNOWN` outcomes with bounded freshness.
-* Repeated checks, immutable numbered local outputs and state comparison.
+* Repeated checks, non-overwriting numbered local outputs and state comparison.
 * Transition timeline and time to first observed denial, measured from watch start.
 * JSON evidence, historical inspection and CSV export.
 * Stable exit codes for scripts and CI.
@@ -107,6 +107,13 @@ earlier transitions remain in its numbered evidence files.
 The watch summary also records transitions, residual/unknown sample counts and
 time to first observed `VERIFIED`. Its clock starts when watch starts, not when an
 administrative operation occurs; this is not a causal revocation-latency claim.
+`summary.json` distinguishes a complete run, a reached scheduling limit, an error
+and an operator interruption. On an error or interruption, completed evidence
+files remain and Lite attempts to preserve a partial summary with a safe error
+code. A previous `VERIFIED` sample does not make an incomplete run successful:
+errors and scheduling cutoffs exit with 4; operator interruptions exit with 130. A process kill or an
+unwritable destination may prevent the summary from being saved. Files are never
+overwritten by Lite; this does not make them immutable to their owner.
 
 ## Interpret the boundary
 

@@ -9,11 +9,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from assurance_lite import cli, lab
+from assurance_lite import cli, engine, lab
 from assurance_lite.common import write_private
 
 
@@ -205,6 +206,8 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(len(list(output.iterdir())), 3)
         summary = json.loads((output / "summary.json").read_text())
         self.assertEqual(summary["samples"], 2)
+        self.assertEqual(summary["completion"], "COMPLETE")
+        self.assertIsNone(summary["error"])
         self.assertEqual(summary["currentness"], "HISTORICAL_ONLY")
         self.assertEqual(summary["transitions"], [])
         self.assertEqual(summary["first_verified_elapsed_seconds"], samples[0]["elapsed_seconds"])
@@ -264,6 +267,120 @@ class CommandLineTests(unittest.TestCase):
         for secret in self.private_values:
             self.assertNotIn(secret, captured.getvalue())
             self.assertNotIn(secret, json.dumps(summary))
+
+
+    def interrupted_watch(self, failure, *, expiry=False, fail_summary=False):
+        with lab._running_lab() as (laboratory, config):
+            configuration = self.configure(config)
+            baseline = self.establish(configuration)
+            laboratory.set_phase("denied")
+            output = self.directory / "partial-watch"
+            arguments = ["watch", "--config", str(configuration), "--baseline", str(baseline),
+                         "--allow-http-loopback", "--directory", str(output),
+                         "--count", "2", "--interval", "0.1", "--json"]
+            expires = json.loads(baseline.read_text())["payload"]["expires_at"]
+            original_check = engine.check
+            calls = 0
+
+            def check_next(*args):
+                nonlocal calls
+                calls += 1
+                if expiry and calls == 2:
+                    with patch("assurance_lite.engine.utc_now", return_value=expires):
+                        return original_check(*args)
+                return original_check(*args)
+
+            original_write = cli.write_private
+
+            def save(path, value):
+                if fail_summary and Path(path).name == "summary.json":
+                    raise OSError("synthetic-private-storage-detail")
+                return original_write(path, value)
+
+            captured, errors = io.StringIO(), io.StringIO()
+            with patch("assurance_lite.engine.check", side_effect=check_next):
+                with patch("assurance_lite.cli.time.sleep", side_effect=failure):
+                    with patch("assurance_lite.cli.write_private", side_effect=save):
+                        with redirect_stdout(captured), redirect_stderr(errors):
+                            status = cli.main(arguments)
+        self.assertTrue((output / "check-0001.json").exists())
+        self.assertFalse((output / "check-0002.json").exists())
+        recorded = json.loads((output / "check-0001.json").read_text())
+        self.assertEqual(recorded["payload"]["state"], "VERIFIED")
+        for secret in self.private_values + ["synthetic-private-storage-detail"]:
+            self.assertNotIn(secret, captured.getvalue() + errors.getvalue())
+        self.assertNotIn("Traceback", errors.getvalue())
+        summary = None if fail_summary else json.loads((output / "summary.json").read_text())
+        if summary is not None:
+            self.assertEqual(summary["samples"], 1)
+            self.assertEqual(summary["requested_samples"], 2)
+            self.assertEqual(summary["last_recorded_state"], "VERIFIED")
+            self.assertEqual(summary["last_reported_state"], "VERIFIED")
+            self.assertEqual(summary["currentness"], "HISTORICAL_ONLY")
+            self.assertIsNotNone(summary["first_verified_elapsed_seconds"])
+            self.assertEqual(stat.S_IMODE((output / "summary.json").stat().st_mode), 0o600)
+            for secret in self.private_values:
+                self.assertNotIn(secret, json.dumps(summary))
+        return status, json.loads(errors.getvalue()), summary
+
+    def test_watch_preserves_partial_summary_when_baseline_expires(self):
+        status, error, summary = self.interrupted_watch(None, expiry=True)
+        self.assertEqual(status, 4)
+        self.assertEqual(error["error"], "baseline_expired_or_future")
+        self.assertEqual(summary["completion"], "FAILED")
+        self.assertEqual(summary["error"], "baseline_expired_or_future")
+
+    def test_watch_preserves_partial_summary_on_operator_interruption(self):
+        status, error, summary = self.interrupted_watch(KeyboardInterrupt())
+        self.assertEqual(status, 130)
+        self.assertEqual(error["error"], "interrupted")
+        self.assertEqual(summary["completion"], "INTERRUPTED")
+        self.assertEqual(summary["error"], "interrupted")
+
+    def test_watch_redacts_unexpected_failure_in_partial_summary(self):
+        marker = "synthetic-sensitive-runtime-detail"
+        self.private_values.append(marker)
+        status, error, summary = self.interrupted_watch(RuntimeError(marker))
+        self.assertEqual(status, 4)
+        self.assertEqual(error["error"], "operation_failed")
+        self.assertEqual(summary["completion"], "FAILED")
+        self.assertEqual(summary["error"], "operation_failed")
+
+    def test_watch_summary_failure_does_not_mask_operator_interruption(self):
+        status, error, _ = self.interrupted_watch(KeyboardInterrupt(), fail_summary=True)
+        self.assertEqual(status, 130)
+        self.assertEqual(error["error"], "interrupted")
+
+
+    def test_watch_scheduling_cutoff_is_incomplete_and_never_successful(self):
+        with lab._running_lab() as (laboratory, config):
+            configuration = self.configure(config)
+            baseline = self.establish(configuration)
+            laboratory.set_phase("denied")
+            output = self.directory / "limited-watch"
+            arguments = ["watch", "--config", str(configuration), "--baseline", str(baseline),
+                         "--allow-http-loopback", "--directory", str(output),
+                         "--count", "2", "--interval", "0.1", "--json"]
+            clock = {"elapsed": 0.0}
+
+            def scheduling_pause(_interval):
+                clock["elapsed"] = 3601.0
+
+            isolated_time = SimpleNamespace(monotonic=lambda: clock["elapsed"], sleep=scheduling_pause)
+            captured, errors = io.StringIO(), io.StringIO()
+            with patch.object(cli, "time", isolated_time):
+                with redirect_stdout(captured), redirect_stderr(errors):
+                    status = cli.main(arguments)
+        self.assertEqual(status, 4)
+        self.assertEqual(json.loads(errors.getvalue())["error"], "watch_time_limit_reached")
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertEqual(summary["completion"], "LIMIT_REACHED")
+        self.assertEqual(summary["error"], "watch_time_limit_reached")
+        self.assertEqual(summary["samples"], 1)
+        self.assertEqual(summary["requested_samples"], 2)
+        self.assertEqual(summary["last_recorded_state"], "VERIFIED")
+        self.assertTrue((output / "check-0001.json").exists())
+        self.assertFalse((output / "check-0002.json").exists())
 
 
 if __name__ == "__main__":

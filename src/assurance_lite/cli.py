@@ -142,36 +142,57 @@ def _watch(args):
     first_verified = None
     residual_samples = 0
     unknown_samples = 0
-    for index in range(args.count):
-        if time.monotonic() - started >= 3600:
-            break
-        envelope = check(cfg, baseline)
-        write_private(Path(args.directory) / f"check-{index + 1:04d}.json", envelope)
-        last = _summary(envelope)
-        last["sequence"] = index + 1
-        elapsed = round(time.monotonic() - started, 6)
-        last["elapsed_seconds"] = elapsed
-        if previous_state is not None and last["state"] != previous_state:
-            transitions.append({"sequence": index + 1, "elapsed_seconds": elapsed,
-                                "before": previous_state, "after": last["state"]})
-        previous_state = last["state"]
-        if last["state"] == "VERIFIED" and first_verified is None:
-            first_verified = elapsed
-        residual_samples += last["state"] == "RESIDUAL"
-        unknown_samples += last["state"] == "UNKNOWN"
-        _emit(last, args.json)
-        count += 1
-        if index + 1 < args.count:
-            time.sleep(args.interval)
-    if last is None:
-        raise AssuranceError("watch_no_observation")
-    write_private(Path(args.directory) / "summary.json", {
-        "samples": count, "last_recorded_state": last["state"],
-        "currentness": "HISTORICAL_ONLY", "elapsed_seconds": round(time.monotonic() - started, 6),
-        "transitions": transitions, "first_verified_elapsed_seconds": first_verified,
-        "residual_samples": residual_samples, "unknown_samples": unknown_samples,
-        "timing_reference": "WATCH_START_NOT_ADMINISTRATIVE_ACTION",
-    })
+    def finish(completion, error=None):
+        write_private(Path(args.directory) / "summary.json", {
+            "samples": count, "requested_samples": args.count,
+            "completion": completion, "error": error,
+            "last_recorded_state": last["recorded_state"] if last is not None else None,
+            "last_reported_state": last["state"] if last is not None else None,
+            "currentness": "HISTORICAL_ONLY", "elapsed_seconds": round(time.monotonic() - started, 6),
+            "transitions": transitions, "first_verified_elapsed_seconds": first_verified,
+            "residual_samples": residual_samples, "unknown_samples": unknown_samples,
+            "timing_reference": "WATCH_START_NOT_ADMINISTRATIVE_ACTION",
+        })
+
+    completion = "COMPLETE"
+    try:
+        for index in range(args.count):
+            if time.monotonic() - started >= 3600:
+                completion = "LIMIT_REACHED"
+                break
+            envelope = check(cfg, baseline)
+            write_private(Path(args.directory) / f"check-{index + 1:04d}.json", envelope)
+            last = _summary(envelope)
+            last["sequence"] = index + 1
+            elapsed = round(time.monotonic() - started, 6)
+            last["elapsed_seconds"] = elapsed
+            if previous_state is not None and last["state"] != previous_state:
+                transitions.append({"sequence": index + 1, "elapsed_seconds": elapsed,
+                                    "before": previous_state, "after": last["state"]})
+            previous_state = last["state"]
+            if last["state"] == "VERIFIED" and first_verified is None:
+                first_verified = elapsed
+            residual_samples += last["state"] == "RESIDUAL"
+            unknown_samples += last["state"] == "UNKNOWN"
+            count += 1
+            _emit(last, args.json)
+            if index + 1 < args.count:
+                time.sleep(args.interval)
+        if last is None:
+            raise AssuranceError("watch_no_observation")
+    except (Exception, KeyboardInterrupt) as exc:
+        interrupted = isinstance(exc, KeyboardInterrupt)
+        error = "interrupted" if interrupted else (exc.code if isinstance(exc, AssuranceError) else "operation_failed")
+        try:
+            finish("INTERRUPTED" if interrupted else "FAILED", error)
+        except (Exception, KeyboardInterrupt):
+            # Error prior servatur, etiam si memoria deficit.
+            pass
+        raise
+    if completion == "LIMIT_REACHED":
+        finish(completion, "watch_time_limit_reached")
+        raise AssuranceError("watch_time_limit_reached")
+    finish(completion)
     return EXIT.get(last["state"], 4)
 
 
