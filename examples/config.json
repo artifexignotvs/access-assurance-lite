@@ -1,0 +1,12 @@
+{
+  "schema": "access-assurance-lite/config-v1",
+  "subject": {"id": "subject-example", "token_file": "subject.token"},
+  "control": {"id": "control-example", "token_file": "control.token"},
+  "resources": [
+    {"id": "documents", "url": "https://app.example.invalid/assurance/documents"},
+    {"id": "billing", "url": "https://app.example.invalid/assurance/billing"}
+  ],
+  "timeout_seconds": 3,
+  "max_response_bytes": 16384,
+  "freshness_seconds": 30
+}

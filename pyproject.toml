@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "access-assurance-lite"
+version = "0.1.0a1"
+description = "Local, bounded verification of application access removal"
+requires-python = ">=3.11"
+dependencies = []
+authors = [{name = "Artifex Ignotvs"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+
+[project.scripts]
+assurance-lite = "assurance_lite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
